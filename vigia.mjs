@@ -4,9 +4,9 @@ import { chromium } from 'playwright';
 const URL       = 'https://tuboleto.cultura.pe/llaqta_machupicchu';
 const CIRCUITO  = /Circuito 3/i;
 const RUTA      = /3-?B/i;
-const MES       = 7;          // 5=mayo, 7=julio
+const MES       = 5;          // 5=mayo, 7=julio
 const ANIO      = 2026;
-const DIAS      = [6,7];
+const DIAS      = [20,21,22,23,24,25,26];
 const MIN_CUPOS = 5;
 // ===============================
 
