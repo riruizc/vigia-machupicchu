@@ -1,10 +1,3 @@
-// ============================================================
-//  DIAGNÓSTICO — Machu Picchu (tuboleto / llaqta)
-//  Abre la web, despliega cada control y EXTRAE su estructura real
-//  a "diagnostico.txt" (+ capturas + HTML completo de respaldo).
-//  Con eso se escriben los selectores correctos del monitor final.
-//  Es de un solo uso: córrelo a mano, mándame el resultado.
-// ============================================================
 
 import { chromium } from 'playwright';
 import fs from 'fs';
@@ -19,7 +12,6 @@ let paso = 0;
 async function shot(page, n){ paso++; const f=`step-${String(paso).padStart(2,'0')}-${n}.png`;
   try{ await page.screenshot({path:f,fullPage:true}); add('captura '+f);}catch(e){ add('shot fail '+n+': '+e.message);} }
 
-// Vuelca, de un selector, los primeros elementos con su tipo/clase/estado/texto.
 async function dump(page, titulo, selector){
   const items = await page.locator(selector).evaluateAll(els => els.slice(0,50).map(e => ({
     tag: e.tagName.toLowerCase(),
@@ -29,15 +21,52 @@ async function dump(page, titulo, selector){
     cls: (e.className && e.className.toString ? e.className.toString() : '').slice(0,90),
     text: (e.textContent || '').trim().replace(/\s+/g,' ').slice(0,60),
   }))).catch(() => []);
-  add(`\n### ${titulo}  [selector: ${selector}] -> ${items.length} elementos`);
-  items.forEach((it,i)=> add(`  [${i}] <${it.tag}> role="${it.role}" disabled=${it.disabled} aria-disabled="${it.ariaDisabled}" cls="${it.cls}" txt="${it.text}"`));
+  add(`\n### ${titulo}  [${selector}] -> ${items.length}`);
+  items.forEach((it,i)=> add(`  [${i}] <${it.tag}> role="${it.role}" disabled=${it.disabled} aria="${it.ariaDisabled}" cls="${it.cls}" txt="${it.text}"`));
+}
+
+async function dumpComprar(page){
+  const cands = await page.evaluate(()=>{
+    const r=[];
+    document.querySelectorAll('button,a,div,span,[role="button"]').forEach(e=>{
+      const txt=(e.textContent||'').trim();
+      if(/comprar/i.test(txt) && txt.length<40){
+        r.push({tag:e.tagName.toLowerCase(), role:e.getAttribute('role')||'', cls:(e.className||'').toString().slice(0,80), txt:txt.slice(0,40), html:e.outerHTML.slice(0,180)});
+      }
+    });
+    return r.slice(0,15);
+  }).catch(()=>[]);
+  add(`\n### Candidatos "Comprar" (${cands.length})`);
+  cands.forEach((c,i)=> add(`  [${i}] <${c.tag}> role="${c.role}" cls="${c.cls}" txt="${c.txt}"\n      html=${c.html}`));
+}
+
+async function clickComprar(page){
+  const cands = [
+    page.getByRole('button',{name:/comprar/i}),
+    page.getByRole('link',{name:/comprar/i}),
+    page.getByText(/^\s*comprar\s*$/i),
+    page.locator(':text("Comprar")'),
+  ];
+  for (const c of cands){
+    if (await c.count().catch(()=>0)){
+      try{ await c.first().click({timeout:6000}); add('Comprar OK'); return true; }
+      catch(e){ add('Comprar intento: '+e.message); }
+    }
+  }
+  const ok = await page.evaluate(()=>{
+    const els=[...document.querySelectorAll('button,a,div,span,[role="button"]')];
+    const t=els.find(e=>/comprar/i.test((e.textContent||'').trim()) && (e.textContent||'').trim().length<40 && e.offsetParent!==null);
+    if(t){ t.click(); return true; } return false;
+  }).catch(()=>false);
+  add('Comprar por JS: '+ok);
+  return ok;
 }
 
 async function abrirPorEtiqueta(page, etiqueta){
   const lbl = page.getByText(etiqueta, { exact:false }).first();
-  await lbl.scrollIntoViewIfNeeded();
+  await lbl.scrollIntoViewIfNeeded().catch(()=>{});
   const ctrl = lbl.locator('xpath=following::*[self::div or self::button or self::input or self::span][1]');
-  await ctrl.click({ timeout:10000 }).catch(e=>add('click '+etiqueta+': '+e.message));
+  await ctrl.click({ timeout:8000 }).catch(e=>add('click '+etiqueta+': '+e.message));
   await page.waitForTimeout(1000);
 }
 
@@ -46,85 +75,81 @@ async function abrirPorEtiqueta(page, etiqueta){
   const page = await browser.newPage({ locale:'es-PE' });
   page.setDefaultTimeout(15000);
   try {
-    add('== DIAGNÓSTICO '+new Date().toISOString()+' ==');
-    await page.goto(URL, { waitUntil:'networkidle', timeout:60000 });
+    add('== DIAGNOSTICO v2 '+new Date().toISOString()+' ==');
+    await page.goto(URL, { waitUntil:'domcontentloaded', timeout:60000 });
+    await page.waitForTimeout(5000);
     await shot(page,'home');
+    fs.writeFileSync('00-home.html', await page.content());
 
-    await page.getByRole('button',{name:/comprar/i}).first().click();
+    await dumpComprar(page);
+    await dump(page,'HOME botones','button');
+    await dump(page,'HOME links','a');
+
+    for (const t of [/aceptar/i,/accept/i,/entendido/i]){
+      const b = page.getByRole('button',{name:t}); if(await b.count().catch(()=>0)){ await b.first().click().catch(()=>{}); }
+    }
+
+    const abrio = await clickComprar(page);
     await page.waitForTimeout(2500);
     await shot(page,'modal');
     fs.writeFileSync('01-modal.html', await page.content());
+    if(!abrio) add('No abrio el modal: revisa 00-home.html y los candidatos.');
 
-    // Estructura general de los campos
-    await dump(page,'¿Hay <select> nativos?','select');
-    await dump(page,'Opciones de <select> nativos','select option');
-    await dump(page,'Inputs','input');
+    await dump(page,'Selects nativos','select');
+    await dump(page,'Opciones select','select option');
 
-    // Desplegable de CIRCUITO abierto
     await abrirPorEtiqueta(page,'Selecciona el circuito');
     await shot(page,'circuito-abierto');
-    await dump(page,'CIRCUITO: opciones (role=option)','[role="option"]');
-    await dump(page,'CIRCUITO: opciones (li)','ul li');
-    await dump(page,'CIRCUITO: opciones (mat/ng)','mat-option, .mat-option, .ng-option, .p-dropdown-item');
+    await dump(page,'CIRCUITO role=option','[role="option"]');
+    await dump(page,'CIRCUITO li','ul li');
+    await dump(page,'CIRCUITO mat/ng/p','mat-option, .mat-option, .ng-option, .p-dropdown-item');
     fs.writeFileSync('02-circuito.html', await page.content());
-
-    // Elegir circuito 3
     await page.getByText(CIRCUITO,{exact:false}).first().click({timeout:8000}).catch(e=>add('pick circuito: '+e.message));
     await page.waitForTimeout(900);
 
-    // Desplegable de RUTA abierto
     await abrirPorEtiqueta(page,'ruta de tu recorrido');
     await shot(page,'ruta-abierta');
-    await dump(page,'RUTA: opciones (role=option)','[role="option"]');
-    await dump(page,'RUTA: opciones (li)','ul li');
+    await dump(page,'RUTA role=option','[role="option"]');
+    await dump(page,'RUTA li','ul li');
     await page.getByText(RUTA,{exact:false}).first().click({timeout:8000}).catch(e=>add('pick ruta: '+e.message));
     await page.waitForTimeout(900);
 
-    // CALENDARIO
     const campoFecha = page.getByText('fecha de tu visita',{exact:false}).first().locator('xpath=following::*[1]');
     await campoFecha.click().catch(e=>add('abrir calendario: '+e.message));
     await page.waitForTimeout(1500);
     await shot(page,'calendario');
     fs.writeFileSync('03-calendario.html', await page.content());
-    await dump(page,'CALENDARIO: celdas (gridcell)','[role="gridcell"]');
-    await dump(page,'CALENDARIO: celdas (td)','table td');
-    await dump(page,'CALENDARIO: botones de día','button');
+    await dump(page,'CAL gridcell','[role="gridcell"]');
+    await dump(page,'CAL td','table td');
+    await dump(page,'CAL botones','button');
 
-    // Ir a JULIO 2026
     for (let i=0;i<6;i++){
-      const enJulio = await page.getByText(/JUL\.?\s*2026/i).count();
+      const enJulio = await page.getByText(/JUL\.?\s*2026/i).count().catch(()=>0);
       if (enJulio>0){ add('Julio 2026 a la vista'); break; }
       const next = page.getByRole('button',{name:/next|siguiente/i}).first();
-      if (await next.count()) await next.click().catch(()=>{});
-      else { const fl = page.locator('button:has-text(">"), button:has-text("\u203a")'); if(await fl.count()>1) await fl.nth(1).click().catch(()=>{}); }
+      if (await next.count().catch(()=>0)) await next.click().catch(()=>{});
+      else { const fl = page.locator('button:has-text(">"), button:has-text("\u203a")'); if(await fl.count().catch(()=>0)>1) await fl.nth(1).click().catch(()=>{}); }
       await page.waitForTimeout(700);
     }
     await shot(page,'julio');
     fs.writeFileSync('04-julio.html', await page.content());
-    await dump(page,'JULIO: celdas (gridcell)','[role="gridcell"]');
-    await dump(page,'JULIO: botones de día','button');
+    await dump(page,'JUL gridcell','[role="gridcell"]');
+    await dump(page,'JUL botones','button');
 
-    // Intentar abrir un día disponible para ver horarios + cupos
     for (const d of ['21','22','23','24','25']){
       const cel = page.getByText(new RegExp('^\\s*'+d+'\\s*$')).last();
-      if (await cel.count()){
-        await cel.click().catch(()=>{});
-        await page.waitForTimeout(1200);
-        add('Cliqué día '+d);
-        break;
-      }
+      if (await cel.count().catch(()=>0)){ await cel.click().catch(()=>{}); await page.waitForTimeout(1200); add('Clique dia '+d); break; }
     }
     await shot(page,'dia-elegido');
 
     await abrirPorEtiqueta(page,'horario de ingreso');
     await shot(page,'horarios');
-    await dump(page,'HORARIOS: opciones (role=option)','[role="option"]');
-    await dump(page,'HORARIOS: opciones (li)','ul li');
+    await dump(page,'HORARIOS role=option','[role="option"]');
+    await dump(page,'HORARIOS li','ul li');
     fs.writeFileSync('05-horarios.html', await page.content());
 
-    // Texto visible (a veces los cupos salen como "X disponibles")
     const texto = (await page.evaluate(()=>document.body.innerText)) || '';
-    add('\n### TEXTO VISIBLE DEL MODAL (recorte):\n'+texto.replace(/\s+/g,' ').slice(0,1500));
+    add('\n### TEXTO VISIBLE (recorte):\n'+texto.replace(/\s+/g,' ').slice(0,1500));
 
   } catch(e){
     add('ERROR GENERAL: '+e.message);
